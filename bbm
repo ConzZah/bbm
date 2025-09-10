@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+  #==============================================
+  # Project: bbm
+  # Author:  ConzZah / (c) 2025
+  # Last Modification: 26.07.2025 / 21:57 [v0.1]
+  #==============================================
+
+echo -e "\n=== bottles-backup-manager v0.1 by ConzZah ==="
+
+help () { 
+echo -e "\nbbm is a simple backup manager for bottles.\n
+USAGE: bbm [-i] [/path/to/backup_xyz.tar.gz] // [-e] [bottle-to-export]\n" ;}
+[ "$1" = "" ] && help && exit
+
+check_bottle () {
+### checks if a bottle with the same name already exists
+echo -e "\n--> CHECKING BACKUP.."
+## make sure that user imput is actually a .tar.gz archive:
+gztest="$(echo "$bottle2import"| rev| cut -d '.' -f 1,2| rev)"
+[ "$gztest" != "tar.gz" ] && echo -e "--> ERROR: BACKUP DOESN'T SEEM TO BE A .tar.gz ARCHIVE.\n" && exit 1
+## if bottle.yml doesn't exist within the archive, exit 
+! tar -tvf "$bottle2import"| grep -m1 -oq "bottle.yml" && \
+echo -e "--> ERROR: BACKUP DOESN'T CONTAIN ESSENTIAL CONFIGURATION FILES, EXITING.\n" && exit 1
+## get the actual name of the bottle:
+bottle_name="$(basename "$bottle2import"| sed -e 's#backup_##g' -e 's#.tar.gz##g')"
+## update bottle_path to the full path:
+bottle_path="$bottle_path/$bottle_name"
+## if the bottle doesn't already exist, continue.
+## otherwise, ask the user if they want to overwrite it
+[ ! -d "$bottle_path" ] && import_bottle || \
+echo -e "\n--> WARNING: A BOTTLE WITH THE SAME NAME EXISTS ALREADY.\n\nDO YOU WANT TO OVERWRITE IT? [y/n]"
+read -r yn; case $yn in
+y|Y) rm -fr "${bottle_path:?}" && import_bottle ;;
+*) echo -e "\n--> OVERWRITE CANCELED\n" && exit 0 
+esac
+}
+
+import_bottle () {
+### extracts bottle backup and cd's to it
+echo -e "\n--> EXTRACTING: $bottle_name"
+tar -zx"${v}"f "$bottle2import" -C "${bottle_path//$bottle_name/}" || \
+{ echo -e "\n--> EXTRACTION ERROR.\n"; exit 1 ;}
+## checks if bottle directory exists and cd's into it 
+[ -d "$bottle_path" ] && cd "$bottle_path" && check_runner 
+}
+
+check_runner () {
+### checks if the required runner is present, else downloads it.
+echo -e "\n--> CHECKING FOR MISSING RUNNER.."
+req_runner="$(grep -w "Runner" "bottle.yml"| cut -d ' ' -f 2)"
+[ ! -d "$runner_path/$req_runner" ] && dl_runner || \
+[ -d "$runner_path/$req_runner" ] && echo -e "\n--> REQUIRED RUNNER ALREADY INSTALLED."
+fix_paths
+}
+
+dl_runner () {
+### downloads missing runners
+pushd "$runner_path" || exit 1 
+echo -e "\n--> REQUIRED RUNNER: $req_runner IS NOT YET INSTALLED. \n\nDOWNLOADING..\n"
+## find out if $req_runner is proton or wine based ($rt = runner type)
+! curl -sL "$components/tree/main/runners/wine"| grep -q "$req_runner.yml" && rt="proton" || rt="wine"
+## get runner.yml 
+runner_yml="$(curl -sL "$components/raw/main/runners/$rt/$req_runner.yml")"
+## get info from runner.yml
+runner_url="$(grep "url" <<< "$runner_yml"| cut -d ' ' -f 4)"
+runner_md5="$(grep "file_checksum" <<< "$runner_yml"| cut -d ' ' -f 4)"
+runner_fn="$(grep "file_name" <<< "$runner_yml"| cut -d ' ' -f 3)"
+runner_name="$(grep "Name" <<< "$runner_yml"| cut -d ' ' -f 2)"
+## download runner
+curl -LO "$runner_url"
+## compare md5 sums
+! diff <(md5sum "$runner_fn"| cut -d ' ' -f 1) <(echo "$runner_md5") >/dev/null && \
+echo -e "\n--> ERROR: MD5's DON'T MATCH, ABORTING..\n" && rm -f "$runner_fn"
+## extract runner
+[ -f "$runner_fn" ] && echo -e "--> EXTRACTING RUNNER: $req_runner" && \
+tar -x"${v}"f "$runner_fn" && rm -f "$runner_fn"
+## rename runner dir
+mv "${runner_fn//.tar.xz/}" "$runner_name"
+popd || exit 1; fix_paths
+}
+
+fix_paths () {
+echo -e "\n--> CHECKING PATHS..\n"
+### AFFECTED FILES: bottle.yml, user.reg, system.reg
+## get the old path from bottle.yml & overwrite it with the actual one
+old_path="$(grep -m1 -o "/.*/$bottle_name" bottle.yml)"
+## compare paths, if they match, nothing more needs to be done.
+[ "$old_path" = "$bottle_path" ] && echo -e "--> PATHS SEEM TO BE FINE.\n" && quit
+## if they are different, we'll fix them:
+echo -e "--> PATHS DIFFER, FIXING PATHS..\n"
+sed -i "s#$old_path#$bottle_path#g" bottle.yml
+## next is the old_runner_path in system.reg and user.reg:
+## ( NOTE: "some" formatting is required because of the double backslashes, LORD HELP US )
+bs_old_runner_path="$(grep -m1 -o 'Z:.*\\runners' system.reg| sed 's#\\\\#\\\\\\\\#g')"
+old_runner_path="$(echo "$bs_old_runner_path"|  tr '\\' '/'| tr -s "/"| head -n1| sed 's#Z:##g')"
+## compare runner paths, if they don't match, create $bs_runner_path and replace em.
+[ "$old_runner_path" != "$runner_path" ] && bs_runner_path="$(echo "Z:$runner_path"| sed 's#/#\\\\\\\\#g')" && \
+sed -i "s#$bs_old_runner_path#$bs_runner_path#g" system.reg user.reg
+quit
+}
+
+export_bottle () {
+### exports bottles
+## get list of bottles
+cd "$bottle_path" || exit 1; my_bottles="$(ls)"
+## if bottle2export is not set yet, ask the user which bottle to export
+[ -z "$bottle2export" ] && echo -e "\nENTER NAME OF THE BOTTLE TO EXPORT" && \
+echo -e "\n$my_bottles\n" && read -rp "--> " bottle2export
+## checks if the bottle name entered actually exists
+bottle2export="$(grep -m1 -i "$bottle2export" <<< "$my_bottles")"
+[ -z "$bottle2export" ] && echo -e "\n--> ERROR: BOTTLE NOT FOUND\n" && exit 1 
+echo -e "\n--> EXPORT: $bottle2export ?\n"
+read -rp "[y/n] " yn
+case $yn in 
+y|Y) echo -e "\n--> EXPORTING: $bottle2export, PLEASE WAIT...\n" 
+tar -cz"${v}"f "$wd/backup_${bottle2export}.tar.gz" "$bottle2export" && quit || exit 1 ;;
+*) echo -e "\n--> EXPORT CANCELED\n" && exit 0
+esac
+}
+
+quit () { echo -e "--> BOTTLE ${x^^}ED, SEE YA :D\n"; exit 0 ;}
+
+### LAUNCH ### LAUNCH ### LAUNCH ### LAUNCH ### LAUNCH ###
+
+### check if flatpak & bottles are installed:
+! command -v flatpak >/dev/null && echo -e "\n--> pls install flatpak.\n" && exit 1
+[ ! -d "$bottles" ] && ! flatpak list| grep -q "bottles" && \
+echo -e "\n--> pls install bottles.\n" && exit 1
+
+### set vars
+## should the default path not exist, fetch it from bottles-cli:
+bottles="/home/$USER/.var/app/com.usebottles.bottles/data/bottles"
+[ ! -d "$bottles" ] && bottles="$(flatpak run --command=bottles-cli com.usebottles.bottles info bottles-path| sed 's#/bottles##')"
+bottle_path="$bottles/bottles"; runner_path="$bottles/runners"
+components="https://github.com/bottlesdevs/components"
+wd="$(pwd)"; bottle2import=""; bottle2export=""
+
+### process user input
+[ "$1" = "-v" ] && v="v" && shift # <-- verbose
+[ "$1" = "-i" ] && x="import" && \
+[ ! -f "$2" ] && echo -e "\n--> ERROR: INVALID PATH.\n" && exit 1
+[ "$1" = "-e" ] && [ -z "$x" ] && x="export" && bottle2export="$2" && export_bottle
+[ -n "$2" ] && [ -f "$2" ] && [ "$x" = "import" ] && bottle2import="$2" && check_bottle
+[ -n "$1" ] && echo -e "\n--> ERROR: UNRECOGNIZED OPTION." && help && exit 1
