@@ -2,11 +2,11 @@
   #==============================================
   # Project: bbm
   # Author:  ConzZah / (c) 2025
-  # Last Modification: 26.07.2025 / 21:57 [v0.1]
+  # Last Modification: 13.09.2025 / 01:12 [v0.2]
   #==============================================
 
-echo -e "\n=== bottles-backup-manager v0.1 by ConzZah ==="
-
+echo -e "\n=== bottles-backup-manager v0.2 by ConzZah ==="
+ 
 help () { 
 echo -e "\nbbm is a simple backup manager for bottles.\n
 USAGE: bbm [-i] [/path/to/backup_xyz.tar.gz] // [-e] [bottle-to-export]\n" ;}
@@ -37,7 +37,7 @@ esac
 
 import_bottle () {
 ### extracts bottle backup and cd's to it
-echo -e "\n--> EXTRACTING: $bottle_name"
+mkdir -p "$bottle_path"; echo -e "\n--> EXTRACTING: $bottle_name"
 tar -zx"${v}"f "$bottle2import" -C "${bottle_path//$bottle_name/}" || \
 { echo -e "\n--> EXTRACTION ERROR.\n"; exit 1 ;}
 ## checks if bottle directory exists and cd's into it 
@@ -60,11 +60,11 @@ echo -e "\n--> REQUIRED RUNNER: $req_runner IS NOT YET INSTALLED. \n\nDOWNLOADIN
 ## find out if $req_runner is proton or wine based ($rt = runner type)
 ! curl -sL "$components/tree/main/runners/wine"| grep -q "$req_runner.yml" && rt="proton" || rt="wine"
 ## get runner.yml 
-runner_yml="$(curl -sL "$components/raw/main/runners/$rt/$req_runner.yml")"
+runner_yml="$(curl -sL "$components/raw/main/runners/$rt/$req_runner.yml"| tr -s ' ')"
 ## get info from runner.yml
-runner_url="$(grep "url" <<< "$runner_yml"| cut -d ' ' -f 4)"
-runner_md5="$(grep "file_checksum" <<< "$runner_yml"| cut -d ' ' -f 4)"
-runner_fn="$(grep "file_name" <<< "$runner_yml"| cut -d ' ' -f 3)"
+runner_url="$(grep "url" <<< "$runner_yml"| cut -d ' ' -f 3)"
+runner_md5="$(grep "file_checksum" <<< "$runner_yml"| cut -d ' ' -f 3)"
+runner_fn="$(grep "file_name" <<< "$runner_yml"| cut -d ' ' -f 4)"
 runner_name="$(grep "Name" <<< "$runner_yml"| cut -d ' ' -f 2)"
 ## download runner
 curl -LO "$runner_url"
@@ -79,6 +79,8 @@ mv "${runner_fn//.tar.xz/}" "$runner_name"
 popd || exit 1; fix_paths
 }
 
+# shellcheck disable=SC1003 # REASON: we don't need to escape any single quotes.
+# https://www.shellcheck.net/wiki/SC1003
 fix_paths () {
 echo -e "\n--> CHECKING PATHS..\n"
 ### AFFECTED FILES: bottle.yml, user.reg, system.reg
@@ -88,7 +90,7 @@ old_path="$(grep -m1 -o "/.*/$bottle_name" bottle.yml)"
 [ "$old_path" = "$bottle_path" ] && echo -e "--> PATHS SEEM TO BE FINE.\n" && quit
 ## if they are different, we'll fix them:
 echo -e "--> PATHS DIFFER, FIXING PATHS..\n"
-sed -i "s#$old_path#$bottle_path#g" bottle.yml
+[ -n "$old_path" ] && sed -i "s#$old_path#$bottle_path#g" bottle.yml
 ## next is the old_runner_path in system.reg and user.reg:
 ## ( NOTE: "some" formatting is required because of the double backslashes, LORD HELP US )
 bs_old_runner_path="$(grep -m1 -o 'Z:.*\\runners' system.reg| sed 's#\\\\#\\\\\\\\#g')"
@@ -101,11 +103,13 @@ quit
 
 export_bottle () {
 ### exports bottles
-## get list of bottles
+## get list of local bottles
 cd "$bottle_path" || exit 1; my_bottles="$(ls)"
+[ -n "$fzf" ] && [ -z "$bottle2export" ] && bottle2export="$(echo "$my_bottles"| fzf)"
 ## if bottle2export is not set yet, ask the user which bottle to export
-[ -z "$bottle2export" ] && echo -e "\nENTER NAME OF THE BOTTLE TO EXPORT" && \
-echo -e "\n$my_bottles\n" && read -rp "--> " bottle2export
+[ -z "$bottle2export" ] \
+&& echo -e "\n$my_bottles\n\n == ENTER NAME OF THE BOTTLE TO EXPORT ==\n" && \
+read -rp "--> " bottle2export
 ## checks if the bottle name entered actually exists
 bottle2export="$(grep -m1 -i "$bottle2export" <<< "$my_bottles")"
 [ -z "$bottle2export" ] && echo -e "\n--> ERROR: BOTTLE NOT FOUND\n" && exit 1 
@@ -118,6 +122,30 @@ tar -cz"${v}"f "$wd/backup_${bottle2export}.tar.gz" "$bottle2export" && quit || 
 esac
 }
 
+dl_bottle () {
+### download bottle backups from archive.org
+## gets list of available bottles, opens fzf to let the user choose, and finally downloads & imports the chosen bottle
+format_specials () { sed -e "s#%27#'#g" -e 's#%28#(#g' -e 's#%29#)#g' -e 's#%2C#,#g' -e 's#%E2%84%A2#™#g' -e 's#%C2%AE#®#g' ;}
+echo -e "\n--> FETCHING INDEX..\n"; url="https://archive.org/download/bottles-collection"; html="$(curl -sL "$url")"
+raw_index="$(echo "$html"| grep -o '<a href=".*'| cut -d '"' -f 2| grep 'backup_.*')"
+## get filesize and build list:
+echo "--> GETTING FILE SIZES.."
+index=""; for bottle in $raw_index; do
+fsize="$(echo "$html"| grep "$bottle" -a2| tail -n1| tr '<>' ':'| cut -d ':' -f 3)"
+index="$bottle:$fsize $index"
+bottle=""; fsize=""
+done
+index="$(echo "$index"| tr ' ' '\n')"
+formatted_index="$(echo "$index"| sed -e 's#backup_##g' -e 's#.tar.gz##g' -e 's#:# /// #g' -e 's#-# #g'| format_specials | tr -s ' ')"
+index="$(paste -d '~' <(echo "$index") <(echo "$formatted_index"))"
+[ -n "$fzf" ] && chosen_bottle="$(echo "$index"| cut -d '~' -f 2| fzf)"; [ -z "$fzf" ] && \
+echo -e "\n$formatted_index\n\n == ENTER NAME OF THE BOTTLE TO DOWNLOAD ==\n" && read -rp "--> " chosen_bottle
+bottle2dl="$(grep -i -m1 "$chosen_bottle" <<< "$index"| cut -d '~' -f 1| cut -d ':' -f 1)"
+[ -n "$chosen_bottle" ] && echo -e "\n--> DOWNLOADING: $chosen_bottle\n" && \
+bottle_name="$(echo "$chosen_bottle"| tr -s '/'| cut -d '/' -f 1| sed -e 's# $##g' -e 's#^#backup_#g' -e 's#$#.tar.gz#g' -e 's# #-#g'| format_specials)"
+[ -n "$bottle_name" ] && curl -#Lo "$bottle_name" "$url/$bottle2dl" && bottle2import="$bottle_name" && check_bottle || exit 1
+}
+
 quit () { echo -e "--> BOTTLE ${x^^}ED, SEE YA :D\n"; exit 0 ;}
 
 ### LAUNCH ### LAUNCH ### LAUNCH ### LAUNCH ### LAUNCH ###
@@ -126,6 +154,9 @@ quit () { echo -e "--> BOTTLE ${x^^}ED, SEE YA :D\n"; exit 0 ;}
 ! command -v flatpak >/dev/null && echo -e "\n--> pls install flatpak.\n" && exit 1
 [ ! -d "$bottles" ] && ! flatpak list| grep -q "bottles" && \
 echo -e "\n--> pls install bottles.\n" && exit 1
+
+### check if fzf is installed & set $fzf
+! command -v fzf >/dev/null && fzf="" || fzf="x"
 
 ### set vars
 ## should the default path not exist, fetch it from bottles-cli:
@@ -141,4 +172,5 @@ wd="$(pwd)"; bottle2import=""; bottle2export=""
 [ ! -f "$2" ] && echo -e "\n--> ERROR: INVALID PATH.\n" && exit 1
 [ "$1" = "-e" ] && [ -z "$x" ] && x="export" && bottle2export="$2" && export_bottle
 [ -n "$2" ] && [ -f "$2" ] && [ "$x" = "import" ] && bottle2import="$2" && check_bottle
+[ "$1" = "-collection" ] && x="import" && dl_bottle && exit
 [ -n "$1" ] && echo -e "\n--> ERROR: UNRECOGNIZED OPTION." && help && exit 1

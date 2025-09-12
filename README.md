@@ -2,7 +2,7 @@
 
 ### bbm is a simple backup manager for bottles. 
 
-![bbm](https://i.ibb.co/gFMBZBhf/bbm.png)
+![bbm](https://i.imgur.com/LOqextS.png)
 
 ## FEATURES:
 
@@ -12,4 +12,5 @@
 - exporting of bottle backups
 
 pls report any bugs you may find.
+
 ### Cheers, ConzZah 
