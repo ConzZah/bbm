@@ -2,7 +2,7 @@
   #==============================================
   # Project: bbm
   # Author:  ConzZah / (c) 2025
-  # Last Modification: 13.09.2025 / 01:12 [v0.2]
+  # Last Modification: 19.11.2025 / 04:30 [v0.3]
   #==============================================
 
 echo -e "\n=== bottles-backup-manager v0.2 by ConzZah ==="
@@ -62,20 +62,26 @@ echo -e "\n--> REQUIRED RUNNER: $req_runner IS NOT YET INSTALLED. \n\nDOWNLOADIN
 ## get runner.yml 
 runner_yml="$(curl -sL "$components/raw/main/runners/$rt/$req_runner.yml"| tr -s ' ')"
 ## get info from runner.yml
-runner_url="$(grep "url" <<< "$runner_yml"| cut -d ' ' -f 3)"
-runner_md5="$(grep "file_checksum" <<< "$runner_yml"| cut -d ' ' -f 3)"
-runner_fn="$(grep "file_name" <<< "$runner_yml"| cut -d ' ' -f 4)"
-runner_name="$(grep "Name" <<< "$runner_yml"| cut -d ' ' -f 2)"
+runner_url="$(grep -o "url.*" <<< "$runner_yml"| cut -d ' ' -f 2)"
+runner_md5="$(grep -o "file_checksum.*" <<< "$runner_yml"| cut -d ' ' -f 2)"
+runner_fn="$(grep -o "file_name.*" <<< "$runner_yml"| cut -d ' ' -f 2)"
+runner_name="$(grep -o "Name.*" <<< "$runner_yml"| cut -d ' ' -f 2)"
+## if we have 'source' in $runner_yml, it means we need to rename the runner dir to the specified value
+## as luck would have it, 'dest' is basically always runner_name so we got that covered.
+grep -q "source" <<< "$runner_yml" && runner_old_name="$(grep -o "source.*" <<< "$runner_yml"| cut -d ' ' -f 2)"
 ## download runner
-curl -LO "$runner_url"
+curl -Lo "$runner_fn" "$runner_url"
 ## compare md5 sums
 ! diff <(md5sum "$runner_fn"| cut -d ' ' -f 1) <(echo "$runner_md5") >/dev/null && \
 echo -e "\n--> ERROR: MD5's DON'T MATCH, ABORTING..\n" && rm -f "$runner_fn"
 ## extract runner
 [ -f "$runner_fn" ] && echo -e "--> EXTRACTING RUNNER: $req_runner" && \
 tar -x"${v}"f "$runner_fn" && rm -f "$runner_fn"
-## rename runner dir
-mv "${runner_fn//.tar.xz/}" "$runner_name"
+## rename runner dir NOTE: extracted runner dirs have the architecture appended after the name,
+## they won't be recognized by bottles if we don't get rid of it, whether or not they have 'source' in the $runner_yml
+[ -z "$runner_old_name" ] && runner_old_name="$(echo *| grep -o -m1 "$runner_name.*"| cut -d ' ' -f 1)"
+[ -n "$runner_old_name" ] && runner_old_name="$(echo *| grep -o -m1 "$runner_old_name.*"| cut -d ' ' -f 1)" && \
+mv "$runner_old_name" "$runner_name" >/dev/null
 popd || exit 1; fix_paths
 }
 
@@ -138,9 +144,10 @@ done
 index="$(echo "$index"| tr ' ' '\n')"
 formatted_index="$(echo "$index"| sed -e 's#backup_##g' -e 's#.tar.gz##g' -e 's#:# /// #g' -e 's#-# #g'| format_specials | tr -s ' ')"
 index="$(paste -d '~' <(echo "$index") <(echo "$formatted_index"))"
-[ -n "$fzf" ] && chosen_bottle="$(echo "$index"| cut -d '~' -f 2| fzf)"; [ -z "$fzf" ] && \
-echo -e "\n$formatted_index\n\n == ENTER NAME OF THE BOTTLE TO DOWNLOAD ==\n" && read -rp "--> " chosen_bottle
+[ -n "$fzf" ] && chosen_bottle="$(echo "$index"| cut -d '~' -f 2| fzf)"
+[ -z "$fzf" ] && echo -e "\n$formatted_index\n\n == ENTER NAME OF THE BOTTLE TO DOWNLOAD ==\n" && read -rp "--> " chosen_bottle
 bottle2dl="$(grep -i -m1 "$chosen_bottle" <<< "$index"| cut -d '~' -f 1| cut -d ':' -f 1)"
+[ -n "$chosen_bottle" ] && chosen_bottle="$(grep -i -m1 "$chosen_bottle" <<< "$index"| cut -d '~' -f 2)"
 [ -n "$chosen_bottle" ] && echo -e "\n--> DOWNLOADING: $chosen_bottle\n" && \
 bottle_name="$(echo "$chosen_bottle"| tr -s '/'| cut -d '/' -f 1| sed -e 's# $##g' -e 's#^#backup_#g' -e 's#$#.tar.gz#g' -e 's# #-#g'| format_specials)"
 [ -n "$bottle_name" ] && curl -#Lo "$bottle_name" "$url/$bottle2dl" && bottle2import="$bottle_name" && check_bottle || exit 1
@@ -155,7 +162,7 @@ quit () { echo -e "--> BOTTLE ${x^^}ED, SEE YA :D\n"; exit 0 ;}
 [ ! -d "$bottles" ] && ! flatpak list| grep -q "bottles" && \
 echo -e "\n--> pls install bottles.\n" && exit 1
 
-### check if fzf is installed & set $fzf
+### check if fzf is installed & (un)set $fzf
 ! command -v fzf >/dev/null && fzf="" || fzf="x"
 
 ### set vars
