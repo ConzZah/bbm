@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
   #==============================================
-  # Project: bbm v0.4
+  # Project: bbm v0.5
   # Author:  ConzZah / (c) 2026
-  # Last Modification: 2/8/26 8:50 AM
+  # Last Modification: 2/9/26 10:33 AM
   #==============================================
 
 help () {
@@ -72,7 +72,7 @@ fix_bottle () {
 ## should $x equal fix,
 ## run in standalone mode
 [ "$x" = "fix" ] && {
-get_local_bottles; ask4bottle; echo -e "\n--> FIXING: ${bottle_name^^}"
+get_local_bottles; ask4bottle
 [ -n "$bottle_name" ] && bottle_path="$bottle_path/$bottle_name"
 [ -d "$bottle_path" ] && cd "$bottle_path" || exit 1 ;}
 check_runner; check_components; fix_paths; quit
@@ -94,11 +94,11 @@ dl_component; popd >/dev/null || exit 1
 
 check_components () {
 ### checks if components are required / present.
-components="dxvk latencyflex"
+components="dxvk latencyflex vkd3d nvapi"
 for component in $components; do
-grep -iq "$component: false" 'bottle.yml' && echo -e "\n--> ${component^^} NOT REQUIRED." && continue
-grep -iq "$component: true" 'bottle.yml' && {
-req_component="$(grep -m1 "$component" "bottle.yml"| cut -d ' ' -f 2)"
+grep -iq ".*$component: false" 'bottle.yml' && echo -e "\n--> ${component^^} NOT REQUIRED." && continue
+grep -iq ".*$component: true" 'bottle.yml' && {
+req_component="$(grep -i -m1 "${component}-" "bottle.yml"| cut -d ' ' -f 2)"
 ## ^ if the component is set to true in bottle.yml, check for presence of the required version.
 [ -d "$bottles/$component/$req_component" ] && echo -e "\n--> REQUIRED ${component^^} INSTALLED." && continue
 [ ! -d "$bottles/$component/$req_component" ]  && {
@@ -115,20 +115,23 @@ url="$(grep -o "url.*" <<< "$yml"| cut -d ' ' -f 2)"
 md5="$(grep -o "file_checksum.*" <<< "$yml"| cut -d ' ' -f 2)"
 fn="$(grep -o "file_name.*" <<< "$yml"| cut -d ' ' -f 2)"
 name="$(grep -o "Name.*" <<< "$yml"| cut -d ' ' -f 2)"
+## check header for 404s, if we got none, download.
+curl -sLI "$url"| head -n1 | grep -qv '404' && {
 ## download component
 echo -e "\n--> DOWNLOADING: $req_component\n"
-curl -#Lo "$fn" "$url"
+curl -#Lo "$fn" "$url" ;}
 ## compare md5s & delete the file if they don't match
-command -v 'md5sum' >/dev/null && { echo -e "\n--> CHECKING MD5.."
+command -v 'md5sum' >/dev/null && [ -f "$fn" ] && {
+echo -e "\n--> CHECKING MD5.."
 ! diff <(md5sum "$fn"| cut -d ' ' -f 1) <(echo "$md5") >/dev/null && \
 echo -e "\n--> ERROR: MD5's DON'T MATCH, ABORTING.\n" && rm -f "$fn" ;}
 ## extract component
-[ -f "$fn" ] && tar -x"${v}"f "$fn"
+[ -f "$fn" ] && { tar -x"${v}"f "$fn"
 old_name="$(tar -tf "$fn"| head -n1| sed 's#/##g')"
 ## ^ get the name of the top dir in the archive.
 ## if $name and $old_name differ, rename.
 [ "$old_name" != "$name" ] && mv "$old_name" "$name"
-rm -f "$fn" "LICENSE"
+rm -f "$fn" "LICENSE" >/dev/null ;}
 }
 
 # shellcheck disable=SC1003
@@ -164,19 +167,14 @@ export_bottle () {
 ### exports bottles
 get_local_bottles; ask4bottle
 pushd "$bottle_path" >/dev/null || exit 1 
-echo -e "\n--> EXPORT: $bottle_name ?\n"
-read -rp "[y/n] " yn
-case $yn in 
-y|Y) echo -e "\n--> EXPORTING: $bottle_name, PLEASE WAIT.."
-tar -cz"${v}"f "$wd/backup_${bottle_name}.tar.gz" "$bottle_name" && quit || exit 1 ;;
-*) echo -e "\n--> EXPORT CANCELED\n" && exit 0
-esac; popd >/dev/null || exit 1
+tar -cz"${v}"f "$wd/backup_${bottle_name}.tar.gz" "$bottle_name" && quit || exit 1
+popd >/dev/null || exit 1
 }
 
 dl_bottle () {
 ### download bottle backups from archive.org, using my downloader iadl.sh
 ### gets list of available bottles, opens fzf to let the user choose, and finally downloads & imports the chosen bottle
-[ ! -f 'iadl.sh' ] && curl -sLO "https://github.com/ConzZah/iadl/raw/main/iadl.sh"
+[ -f 'iadl.sh' ] && rm -f 'iadl.sh'; curl -sLO 'https://github.com/ConzZah/iadl/raw/main/iadl.sh'
 [ -f 'iadl.sh' ] && bottle_fn="$(bash iadl.sh -fn 'https://archive.org/download/bottles-collection')" && \
 [ -f "$bottle_fn" ] && check_bottle || exit 1
 }
@@ -191,6 +189,13 @@ ask4bottle () {
 bottle_name="$(grep -m1 -i "$bottle_name" <<< "$local_bottles")"
 [ -z "$bottle_name" ] || [ ! -d "$bottle_path/$bottle_name" ] && \
 echo -e "\n--> ERROR: BOTTLE NOT FOUND\n" && exit 1
+## prompt the user for confirmation
+echo -e "\n--> ${x^^}: $bottle_name ?\n"
+read -rp "[y/n] " yn
+case $yn in 
+y|Y) echo -e "\n--> ${x^^}ING: ${bottle_name^^}, PLEASE WAIT.." ;;
+*) echo -e "\n--> ${x^^} CANCELED.\n" && exit
+esac
 }
 
 quit () { echo -e "\n--> BOTTLE ${x^^}ED, SEE YA :D\n"; exit 0 ;}
